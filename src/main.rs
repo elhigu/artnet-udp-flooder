@@ -124,8 +124,10 @@ impl OutputDevice {
             (sent_universes_count as f64) / ((elapsed_milliseconds as f64) / 1000f64);
 
         println!(
-            "{:24}:{:8.2} universes / second",
-            self.address, universes_per_second
+            "Sending to {:24} packets:{:8.2}/sec payload:{:8.2} Mbps",
+            self.address,
+            universes_per_second,
+            universes_per_second * 530f64 * 8f64 / 1024f64 / 1024f64
         );
     }
 
@@ -141,7 +143,10 @@ impl OutputDevice {
             let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
             loop {
                 for output in &rx {
-                    // TODO: if output is Option::None break loop
+                    // if sleeping after every packet, context switch delays seems to
+                    // limit output to ~1800 packets / sec so we allow sending 5 packets
+                    // per switch.
+                    let should_sleep_after = (output.sequence % 5) == 0;
                     let bytes = ArtCommand::Output(output).write_to_buffer().unwrap();
                     socket.send_to(&bytes, &address).unwrap();
 
@@ -150,9 +155,9 @@ impl OutputDevice {
                         *locked_count += 1;
                     }
 
-                    // 2000 packet / s per output should be inaf.. but actually
-                    // just having 500us wait between packets caused system to stall ~980 packets/s
-                    thread::sleep(Duration::from_micros(throttle_us));
+                    if should_sleep_after {
+                        thread::sleep(Duration::from_micros(throttle_us));
+                    }
                 }
 
                 // TODO: add output sync message after frame is complete
