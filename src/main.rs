@@ -6,8 +6,10 @@ use artnet_protocol::*;
 use std::net::UdpSocket;
 
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use std::collections::HashMap;
 
@@ -61,6 +63,9 @@ struct OutputDevice {
     // thread communication and the join_handle of spawned thread, filled after thread is started
     thread_tx: Option<mpsc::Sender<Output>>,
     join_handle: Option<JoinHandle<()>>, // TODO: stats about how often actually full universe range was received
+
+    // for stats counting output packets per second
+    sent_universes: Arc<Mutex<u32>>,
 }
 
 impl OutputDevice {
@@ -75,6 +80,7 @@ impl OutputDevice {
             universe_count,
             thread_tx: Option::None,
             join_handle: Option::None,
+            sent_universes: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -88,7 +94,7 @@ impl OutputDevice {
     }
 
     fn send_frame(&mut self) {
-        // TODO: take mutex to lock thread accessing self.frame and self.send_queue
+        // TODO: take mutex to lock thread accessing self.frame
         for universe in 0..self.universe_count {
             let start: usize = universe as usize * 510;
             let end = start + 510;
@@ -107,10 +113,32 @@ impl OutputDevice {
         }
     }
 
+    fn dump_report(&mut self, elapsed_milliseconds: u128) {
+        let sent_universes = self.sent_universes.clone();
+        let sent_universes_count: u32;
+
+        // get number of sent universes and reset counter
+        {
+            let mut locked_count = sent_universes.lock().unwrap();
+            sent_universes_count = *locked_count;
+            *locked_count = 0;
+        }
+
+        let universes_per_second =
+            (sent_universes_count as f64) / ((elapsed_milliseconds as f64) / 1000f64);
+
+        println!(
+            "{}: {:.4} universes / second",
+            self.address, universes_per_second
+        );
+    }
+
     fn start_output_thread(&mut self) {
         let (tx, rx) = mpsc::channel();
         self.thread_tx = Some(tx);
         let address = self.address.to_owned();
+
+        let sent_universes = self.sent_universes.clone();
 
         let join_handle = thread::spawn(move || {
             let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -119,10 +147,17 @@ impl OutputDevice {
                     // TODO: if output is Option::None break loop
                     let bytes = ArtCommand::Output(output).write_to_buffer().unwrap();
                     socket.send_to(&bytes, &address).unwrap();
-                    // 2000 packet / s should be inaf
+
+                    {
+                        let mut locked_count = sent_universes.lock().unwrap();
+                        *locked_count += 1;
+                    }
+
+                    // 2000 packet / s per output should be inaf
                     thread::sleep(Duration::from_micros(500));
                 }
-                // TODO: add sync message?
+
+                // TODO: add output sync message after frame is complete
             }
         });
 
@@ -161,15 +196,29 @@ impl Outputs {
             device.send_frame();
         }
     }
+
+    fn dump_reports(&mut self, elapsed_milliseconds: u128) {
+        for device in &mut self.devices {
+            device.dump_report(elapsed_milliseconds);
+        }
+    }
 }
 
 fn main() {
     let config = read_config_file("config.json").unwrap();
     let mut outputs = Outputs::new(&config.mappings);
+    let mut last_report = SystemTime::now();
 
     loop {
-        // 100fps N universes depending on config (currently 16 universes)
+        // 50 fps N universes depending on config (currently 32 universes)
         outputs.trigger_frames();
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(20));
+
+        // debug print of outgoing packets rate
+        let since_last_report_ms = last_report.elapsed().unwrap().as_millis();
+        if since_last_report_ms > 1000 {
+            last_report = SystemTime::now();
+            outputs.dump_reports(since_last_report_ms);
+        }
     }
 }
