@@ -1,6 +1,6 @@
-# Art-Net Hub UDP flooder
+# Art-Net UDP flooder
 
-Server which sends art-net packets to configured hosts 40 fps speed at most 2 packets / ms.
+Server which sends art-net packets to configured hosts at most 2 packets / ms.
 
 ## Getting started
 
@@ -9,19 +9,24 @@ Server which sends art-net packets to configured hosts 40 fps speed at most 2 pa
 
 ## Configuration
 
-    # TODO: cleanup all unused configs
-
     {
         "listen": {
-            "//": "Not used for anything... reminder of other project",
+            "//": "Not really used for anything",
             "address": "0.0.0.0",
-            "port": 6454
+            "port": 6666
         },
-        "mappings": [
-            {
-            "host": { "address": "192.168.0.11", "port": 6454 },
-            "//": "Only input range matters, it is number of universes that we send to given host",
-            "universes": { "input": [0, 31], "output_start": 0 }
+        "//": "How often to trigger new output frame sending",
+        "fps": 40.0,
+        "outputs": [
+                {
+                "host": {
+                    "address": "192.168.137.23",
+                    "port": 6454
+                },
+                "//": "number of microseconds to wait before sending next packet to the host",
+                "throttle_us": 200,
+                "//": "Number of universes to send to output",
+                "universe_count": 8
             }
         ]
     }

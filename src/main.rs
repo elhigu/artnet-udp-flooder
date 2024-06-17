@@ -20,13 +20,15 @@ struct AddressConfig {
 #[derive(Serialize, Deserialize, Debug)]
 struct DeviceMappingConfig {
     host: AddressConfig,
+    throttle_us: u64,
     universe_count: u16,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Config {
     listen: AddressConfig,
-    mappings: Vec<DeviceMappingConfig>,
+    fps: f32,
+    outputs: Vec<DeviceMappingConfig>,
 }
 
 fn read_config_file(file_path: &str) -> std::result::Result<Config, std::io::Error> {
@@ -52,6 +54,9 @@ struct OutputDevice {
     // Number of universes configured to send to this device
     universe_count: u16,
 
+    // Number of microseconds to wait after sending a packet to the output host
+    throttle_us: u64,
+
     // thread communication and the join_handle of spawned thread, filled after thread is started
     thread_tx: Option<mpsc::Sender<Output>>,
     join_handle: Option<JoinHandle<()>>,
@@ -69,6 +74,7 @@ impl OutputDevice {
             address: format!("{}:{}", &config.host.address, &config.host.port),
             frame,
             sequence: 0,
+            throttle_us: config.throttle_us,
             universe_count,
             thread_tx: Option::None,
             join_handle: Option::None,
@@ -129,6 +135,7 @@ impl OutputDevice {
         let address = self.address.to_owned();
 
         let sent_universes = self.sent_universes.clone();
+        let throttle_us: u64 = self.throttle_us;
 
         let join_handle = thread::spawn(move || {
             let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -143,8 +150,9 @@ impl OutputDevice {
                         *locked_count += 1;
                     }
 
-                    // 2000 packet / s per output should be inaf
-                    thread::sleep(Duration::from_micros(500));
+                    // 2000 packet / s per output should be inaf.. but actually
+                    // just having 500us wait between packets caused system to stall ~980 packets/s
+                    thread::sleep(Duration::from_micros(throttle_us));
                 }
 
                 // TODO: add output sync message after frame is complete
@@ -187,13 +195,16 @@ impl Outputs {
 
 fn main() {
     let config = read_config_file("config.json").unwrap();
-    let mut outputs = Outputs::new(&config.mappings);
+    let mut outputs = Outputs::new(&config.outputs);
     let mut last_report = SystemTime::now();
 
+    let wait_milliseconds = (1f32 / config.fps) * 1000f32;
+
     loop {
-        // 50 fps N universes depending on config (currently 32 universes)
         outputs.trigger_frames();
-        thread::sleep(Duration::from_millis(20));
+
+        // not very accurate, but close inaf I suppose... maybe should actually measure how often frames are really triggered
+        thread::sleep(Duration::from_millis(wait_milliseconds.round() as u64));
 
         // debug print of outgoing packets rate
         let since_last_report_ms = last_report.elapsed().unwrap().as_millis();
