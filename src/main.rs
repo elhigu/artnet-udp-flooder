@@ -11,8 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
-use std::collections::HashMap;
-
 #[derive(Serialize, Deserialize, Debug)]
 struct AddressConfig {
     address: String,
@@ -20,15 +18,9 @@ struct AddressConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct UniverseMappingConfig {
-    input: (u16, u16),
-    output_start: u16,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
 struct DeviceMappingConfig {
     host: AddressConfig,
-    universes: UniverseMappingConfig,
+    universe_count: u16,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -49,12 +41,12 @@ fn read_config_file(file_path: &str) -> std::result::Result<Config, std::io::Err
 struct OutputDevice {
     address: String,
 
-    // virtual screen where proxy writes the universes for passing them as a single frame to ESP
+    //Virtual screen where proxy writes the universes for passing them as a single frame to ESP
     // or depending on protocol may as well send them as multiple universes with fixed packet
-    // headers and sync messages etc.
+    // headers and sync messages etc. I could also generate some test visuals here, but maybe laterz
     frame: Vec<u8>,
 
-    // Current sequence
+    // Current sequence number for outgoing artnet packet
     sequence: u8,
 
     // Number of universes configured to send to this device
@@ -62,7 +54,7 @@ struct OutputDevice {
 
     // thread communication and the join_handle of spawned thread, filled after thread is started
     thread_tx: Option<mpsc::Sender<Output>>,
-    join_handle: Option<JoinHandle<()>>, // TODO: stats about how often actually full universe range was received
+    join_handle: Option<JoinHandle<()>>,
 
     // for stats counting output packets per second
     sent_universes: Arc<Mutex<u32>>,
@@ -70,7 +62,7 @@ struct OutputDevice {
 
 impl OutputDevice {
     fn new(config: &DeviceMappingConfig) -> OutputDevice {
-        let universe_count = config.universes.input.1 - config.universes.input.0 + 1;
+        let universe_count = config.universe_count;
         let frame = vec![0; (universe_count as usize) * 510];
 
         OutputDevice {
@@ -94,7 +86,6 @@ impl OutputDevice {
     }
 
     fn send_frame(&mut self) {
-        // TODO: take mutex to lock thread accessing self.frame
         for universe in 0..self.universe_count {
             let start: usize = universe as usize * 510;
             let end = start + 510;
@@ -105,7 +96,6 @@ impl OutputDevice {
                 ..Output::default()
             };
 
-            // TODO: add output offset
             output.port_address = PortAddress::try_from(universe).unwrap();
             output.sequence = self.next_sequence();
 
@@ -128,7 +118,7 @@ impl OutputDevice {
             (sent_universes_count as f64) / ((elapsed_milliseconds as f64) / 1000f64);
 
         println!(
-            "{}: {:.4} universes / second",
+            "{:24}:{:8.2} universes / second",
             self.address, universes_per_second
         );
     }
@@ -173,21 +163,12 @@ impl Outputs {
     fn new(config: &Vec<DeviceMappingConfig>) -> Outputs {
         let mut devices: Vec<OutputDevice> = Vec::new();
 
-        let mut device_by_port = HashMap::new();
-
         for device_config in config {
-            // add mapping to setup ports which universes should be delivered to this device
-            let input_range = device_config.universes.input.0..=device_config.universes.input.1;
-            for port in input_range {
-                // TODO: learn how to deal with multiple references to a same data and how to
-                //       bind lifespan properly
-                device_by_port.insert(port, devices.len());
-            }
-
             let mut device = OutputDevice::new(&device_config);
             device.start_output_thread();
             devices.push(device);
         }
+
         Outputs { devices }
     }
 
